@@ -2,28 +2,25 @@ package main
 
 import (
 	"context"
+	"database/sql"
 	"encoding/json"
 	"fmt"
+	"github.com/golang-jwt/jwt/v5"
+	_ "github.com/lib/pq"
+	"log"
 	"net/http"
 	"strings"
 	"time"
-
-	"github.com/golang-jwt/jwt/v5"
 )
 
 type User struct {
+	ID       int    `json:"id"`
 	Username string `json:"username"`
 	Age      int64  `json:"age"`
 	Password string `json:"password"`
 }
 
-var users = map[int64]User{
-	1: {
-		Username: "Bellaria02",
-		Age:      25,
-		Password: "Exdark123",
-	},
-}
+var db *sql.DB
 
 // в ПРОДЕ обязательно
 // env-переменная
@@ -50,25 +47,35 @@ func getUserId(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "Json invalid", http.StatusBadRequest)
 		return
 	}
-	for id, user := range users {
-		if user.Username == creds.Username && user.Password == creds.Password {
-			claims := jwt.MapClaims{
-				"user_id": id,
-				"exp":     time.Now().Add(time.Hour).Unix(),
-			}
-			token := jwt.NewWithClaims(jwt.SigningMethodHS256, claims)
-			tokenString, err := token.SignedString(jwtSecret)
-			if err != nil {
-				http.Error(w, "token invalid", http.StatusBadRequest)
-				return
-			}
-			json.NewEncoder(w).Encode(map[string]string{
-				"token": tokenString,
-			})
-			return
-		}
+	var userID int64
+	err := db.QueryRow(
+		"SELECT id FROM public.users WHERE username=$1 AND password=$2",
+		creds.Username,
+		creds.Password,
+	).Scan(&userID)
+
+	if err == sql.ErrNoRows {
+		http.Error(w, "Invalid credentials", http.StatusUnauthorized)
+		return
 	}
-	http.Error(w, "Invalid  not found", http.StatusNotFound)
+	if err != nil {
+		log.Println("login query error:", err)
+		http.Error(w, "DB error", http.StatusInternalServerError)
+		return
+	}
+	claims := jwt.MapClaims{
+		"user_id": userID,
+		"exp":     time.Now().Add(time.Hour).Unix(),
+	}
+	token := jwt.NewWithClaims(jwt.SigningMethodHS256, claims)
+	tokenString, err := token.SignedString(jwtSecret)
+	if err != nil {
+		http.Error(w, "token invalid", http.StatusBadRequest)
+		return
+	}
+	json.NewEncoder(w).Encode(map[string]string{
+		"token": tokenString,
+	})
 }
 
 func getUser(w http.ResponseWriter, r *http.Request) {
@@ -78,10 +85,15 @@ func getUser(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	defer r.Body.Close()
-	userID := r.Context().Value(userIDKey).(int64)
-	user, ok := users[userID]
+	userID, ok := r.Context().Value(userIDKey).(int64)
 	if !ok {
 		http.Error(w, "User not found", http.StatusNotFound)
+		return
+	}
+	var user User
+	err := db.QueryRow("SELECT username,age FROM public.users WHERE id = $1", userID).Scan(&user.Username, &user.Age)
+	if err == sql.ErrNoRows {
+		http.NotFound(w, r)
 		return
 	}
 	json.NewEncoder(w).Encode(map[string]any{
@@ -126,6 +138,16 @@ func authMiddleware(next http.Handler) http.Handler {
 }
 
 func main() {
+	var err error
+	dsn := "postgres://postgres:Exdark123@localhost:5432/postgres?sslmode=disable"
+	db, err = sql.Open("postgres", dsn)
+	if err != nil {
+		log.Fatal(err)
+	}
+	if err = db.Ping(); err != nil {
+		log.Fatal(err)
+	}
+	log.Println("Connected to postgres")
 	mux := http.NewServeMux()
 	mux.HandleFunc("/login", getUserId)
 	mux.Handle("/user", authMiddleware(http.HandlerFunc(getUser)))
