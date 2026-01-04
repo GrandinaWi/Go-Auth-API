@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"errors"
 	"gostart/internal/auth"
+	"log"
 	"net/http"
 	"time"
 
@@ -77,11 +78,12 @@ func RegisterHandler(svc Service) http.Handler {
 		}
 		u, err := svc.Register(r.Context(), creds.Username, creds.Password, creds.Age)
 		if err != nil {
+			log.Println("REGISTER ERROR:", err) // ← ВАЖНО
 			if errors.Is(err, ErrUserAlreadyExists) {
-				http.Error(w, "User already exists", http.StatusConflict) // 409
+				http.Error(w, "User already exists", http.StatusConflict)
 				return
 			}
-			http.Error(w, "DB error Register", http.StatusInternalServerError)
+			http.Error(w, err.Error(), http.StatusInternalServerError)
 			return
 		}
 		json.NewEncoder(w).Encode(map[string]any{
